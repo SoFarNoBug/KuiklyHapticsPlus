@@ -1,0 +1,12 @@
+{
+  "name": "@jlj/kuikly-haptics-plus-ohos",
+  "version": "0.0.1",
+  "description": "Kuikly Haptics Plus Module for Ohos (KRVibrateModule)",
+  "main": "src/main/ets/KRVibrateModule.ets",
+  "author": "jlj",
+  "license": "MIT",
+  "dependencies": {
+    "@kuikly-open/render": "2.7.0"
+  },
+  "devDependencies": {}
+}
