@@ -1,7 +1,9 @@
+import com.vanniktech.maven.publish.SonatypeHost
+
 plugins {
     id("com.android.library")
     kotlin("android")
-    `maven-publish`
+    id("com.vanniktech.maven.publish")
 }
 
 val mavenVersion: String = findProperty("mavenVersion") as? String
@@ -10,18 +12,25 @@ val mavenVersion: String = findProperty("mavenVersion") as? String
 val groupId: String = findProperty("groupId") as? String
     ?: findProperty("GROUP_ID") as? String
     ?: "com.jlj.kuiklybase"
-val mavenRepoUrl: String = findProperty("mavenRepoUrl") as? String
-    ?: findProperty("MAVEN_REPO_URL") as? String
-    ?: "https://mirrors.tencent.com/repository/maven/kuikly-open/"
-val mavenUsername: String = findProperty("mavenUsername") as? String
-    ?: findProperty("MAVEN_USERNAME") as? String
-    ?: ""
-val mavenPassword: String = findProperty("mavenPassword") as? String
-    ?: findProperty("MAVEN_PASSWORD") as? String
-    ?: ""
 
 group = groupId
 version = mavenVersion
+
+// 可选：保留 GitHub Packages 发布能力（仅当显式传入 mavenRepoUrl 时启用，不影响 Central 发布）
+publishing {
+    repositories {
+        val gpUrl = findProperty("mavenRepoUrl") as? String
+        if (!gpUrl.isNullOrBlank()) {
+            maven {
+                url = uri(gpUrl)
+                credentials {
+                    username = findProperty("mavenUsername") as? String ?: ""
+                    password = findProperty("mavenPassword") as? String ?: ""
+                }
+            }
+        }
+    }
+}
 
 android {
     namespace = "com.jlj.kuiklybase.haptics.android"
@@ -44,27 +53,32 @@ dependencies {
     implementation("androidx.core:core-ktx:1.6.0")
 }
 
-publishing {
-    repositories {
-        maven {
-            url = uri(mavenRepoUrl)
-            credentials {
-                username = mavenUsername
-                password = mavenPassword
+// ---- Maven Central 发布（vanniktech 统一接管：坐标 / POM / 签名 / 上传）----
+mavenPublishing {
+    coordinates("io.github.sofarnobug", "kuiklyhapticsplusandroid", project.version.toString())
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    signAllPublications()
+
+    pom {
+        name.set("KuiklyHapticsPlusAndroid")
+        description.set("KuiklyHapticsPlus 的 Android 原生实现层（KRVibrateModule）")
+        url.set("https://github.com/SoFarNoBug/KuiklyHapticsPlus")
+        licenses {
+            license {
+                name.set("MIT")
+                url.set("https://opensource.org/licenses/MIT")
             }
         }
-    }
-}
-
-afterEvaluate {
-    publishing {
-        publications {
-            create<MavenPublication>("release") {
-                from(components["release"])
-                groupId = project.group.toString()
-                artifactId = "KuiklyHapticsPlusAndroid"
-                version = project.version.toString()
+        developers {
+            developer {
+                id.set("sofarnobug")
+                name.set("SoFarNoBug")
             }
+        }
+        scm {
+            url.set("https://github.com/SoFarNoBug/KuiklyHapticsPlus")
+            connection.set("scm:git:git://github.com/SoFarNoBug/KuiklyHapticsPlus.git")
+            developerConnection.set("scm:git:ssh://git@github.com/SoFarNoBug/KuiklyHapticsPlus.git")
         }
     }
 }
