@@ -8,7 +8,7 @@ plugins {
 
 val mavenVersion: String = findProperty("mavenVersion") as? String
     ?: findProperty("MAVEN_VERSION") as? String
-    ?: "0.0.1"
+    ?: "0.0.2"
 val groupId: String = findProperty("groupId") as? String
     ?: findProperty("GROUP_ID") as? String
     ?: "com.jlj.kuiklybase"

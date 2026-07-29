@@ -9,7 +9,7 @@ plugins {
 
 val mavenVersion: String = findProperty("mavenVersion") as? String
     ?: findProperty("MAVEN_VERSION") as? String
-    ?: "0.0.1"
+    ?: "0.0.2"
 val groupId: String = findProperty("groupId") as? String
     ?: findProperty("GROUP_ID") as? String
     ?: "com.jlj.kuiklybase"
@@ -52,19 +52,22 @@ kotlin {
     iosArm64()
     iosSimulatorArm64()
 
+    ohosArm64 {
+    }
+
     sourceSets {
         val commonMain by getting {
             dependencies {
-                compileOnly("com.tencent.kuikly-open:core:${Version.getKuiklyVersion()}")
-                compileOnly("com.tencent.kuikly-open:core-annotations:${Version.getKuiklyVersion()}")
+                compileOnly("com.tencent.kuikly-open:core:${Version.getKuiklyOhosVersion()}")
+                compileOnly("com.tencent.kuikly-open:core-annotations:${Version.getKuiklyOhosVersion()}")
                 // LocalHapticsModule 依赖 Compose runtime（androidx.compose.runtime.*），仅编译期、不传递
-                compileOnly("com.tencent.kuikly-open:compose:${Version.getKuiklyVersion()}")
+                compileOnly("com.tencent.kuikly-open:compose:${Version.getKuiklyOhosVersion()}")
             }
         }
 
         val androidMain by getting {
             dependencies {
-                compileOnly("com.tencent.kuikly-open:core-render-android:${Version.getKuiklyVersion()}")
+                compileOnly("com.tencent.kuikly-open:core-render-android:${Version.getKuiklyOhosVersion()}")
             }
         }
         val iosX64Main by getting
@@ -94,8 +97,8 @@ android {
 // ---- Maven Central 发布（vanniktech 统一接管：坐标 / POM / 签名 / 上传）----
 mavenPublishing {
     coordinates("io.github.sofarnobug", "kuiklyhapticsplus", project.version.toString())
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
-    signAllPublications()
+        publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+        if (System.getenv("SKIP_SIGN") != "1") signAllPublications()
 
     pom {
         name.set("KuiklyHapticsPlus")

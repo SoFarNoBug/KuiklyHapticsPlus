@@ -12,6 +12,8 @@
  *  - vibratePattern：主线程 Handler 顺序消费 timings，奇数位独立单发、偶数位仅等待（替代 createWaveform，规避厂商 HAL 对 OFF 间隙的合并）
  *  - cancel：Vibrator.cancel()
  *  - isSupported：Vibrator.hasVibrator()
+ *  - play：按事件序列构建 createWaveform（API26+），低版本回退 vibrate(long[], int[], int)；sharpness/frequency 忽略
+ *  - getCapabilities：探测 hasVibrator / hasAmplitudeControl / 各 API 级别能力
  *
  * 说明：
  *  - 强度 0~1 映射为 amplitude 1~255（DEFAULT_AMPLITUDE = -1 表示按系统默认）。
@@ -45,7 +47,7 @@ public class KRVibrateModule : KuiklyRenderBaseModule() {
                     null
                 }
                 METHOD_VIBRATE_WITH_DURATION -> {
-                    vibrateWithDuration(params)
+                    vibrateWithDuration(params, callback)
                     null
                 }
                 METHOD_HAPTIC -> {
@@ -54,6 +56,14 @@ public class KRVibrateModule : KuiklyRenderBaseModule() {
                 }
                 METHOD_VIBRATE_PATTERN -> {
                     vibratePattern(params)
+                    null
+                }
+                METHOD_PLAY -> {
+                    play(params, callback)
+                    null
+                }
+                METHOD_GET_CAPABILITIES -> {
+                    getCapabilities(callback)
                     null
                 }
                 METHOD_CANCEL -> {
@@ -102,7 +112,7 @@ public class KRVibrateModule : KuiklyRenderBaseModule() {
         }
     }
 
-    private fun vibrateWithDuration(params: String?) {
+    private fun vibrateWithDuration(params: String?, callback: KuiklyRenderCallback?) {
         val vibrator = getVibrator() ?: return
         val json = JSONObject(params ?: "{}")
         val duration = json.optLong("duration", DEFAULT_DURATION_MS.toLong())
@@ -123,6 +133,10 @@ public class KRVibrateModule : KuiklyRenderBaseModule() {
         } else {
             @Suppress("DEPRECATION")
             vibrator.vibrate(duration)
+        }
+        // completion 近似：主线程延迟 duration 后回调
+        if (callback != null) {
+            ensureHandler().postDelayed({ callback.invoke(mapOf("completed" to "1")) }, duration)
         }
     }
 
@@ -257,6 +271,130 @@ public class KRVibrateModule : KuiklyRenderBaseModule() {
         return getVibrator()?.hasVibrator() ?: false
     }
 
+    private data class PlayEvent(
+        val time: Long,
+        val duration: Long,
+        val intensity: Float
+    )
+
+    private fun play(params: String?, callback: KuiklyRenderCallback?) {
+        val vibrator = getVibrator() ?: return
+        val json = JSONObject(params ?: "{}")
+        val eventsJson = json.optJSONArray("events") ?: JSONArray()
+        val repeatCount = json.optInt("repeatCount", 0)
+        val usage = if (json.has("usage")) json.optString("usage") else null
+        val n = eventsJson.length()
+        if (n == 0) return
+
+        val events = ArrayList<PlayEvent>(n)
+        for (i in 0 until n) {
+            val e = eventsJson.optJSONObject(i) ?: JSONObject()
+            val intensity = e.optDouble("intensity", 1.0).toFloat().coerceIn(0f, 1f)
+            events.add(
+                PlayEvent(
+                    time = e.optLong("time", 0L),
+                    duration = e.optLong("duration", 0L),
+                    intensity = intensity
+                )
+            )
+        }
+        events.sortBy { it.time }
+        if (events.isEmpty()) return
+
+        // 构建 createWaveform 参数：偶数位=静默，奇数位=震动（与 Android 约定一致）。
+        // sharpness / frequency 在 Android 无对应能力，优雅忽略。
+        val defaultTapMs = 20L
+        val timings = ArrayList<Long>(events.size * 2)
+        val amplitudes = ArrayList<Int>(events.size * 2)
+        var cursor = 0L
+        for (ev in events) {
+            val gap = ev.time - cursor
+            if (gap > 0) {
+                timings.add(gap)
+                amplitudes.add(VibrationEffect.DEFAULT_AMPLITUDE)
+            }
+            val dur = if (ev.duration > 0) ev.duration else defaultTapMs
+            val amp = if (ev.intensity <= 0f) {
+                VibrationEffect.DEFAULT_AMPLITUDE
+            } else {
+                (ev.intensity * 255f).toInt().coerceIn(1, 255)
+            }
+            timings.add(dur)
+            amplitudes.add(amp)
+            cursor = ev.time + dur
+        }
+        val totalMs = timings.sum()
+        // 守卫：空波形或总时长 0 不播放，避免消息风暴
+        if (totalMs <= 0L) return
+
+        val useWaveform = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        val playOnce: () -> Unit = {
+            if (useWaveform) {
+                val effect = VibrationEffect.createWaveform(
+                    timings.toLongArray(),
+                    amplitudes.toIntArray(),
+                    -1
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && usage != null) {
+                    vibrator.vibrate(
+                        effect,
+                        VibrationAttributes.Builder().setUsage(mapUsage(usage)).build()
+                    )
+                } else {
+                    vibrator.vibrate(effect)
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(timings.toLongArray(), -1)
+            }
+        }
+
+        if (repeatCount <= 1) {
+            playOnce()
+            // completion 近似：主线程延迟 totalMs 后回调
+            if (callback != null) {
+                ensureHandler().postDelayed({ callback.invoke(mapOf("completed" to "1")) }, totalMs)
+            }
+        } else {
+            val myToken = ++patternToken
+            val handler = ensureHandler()
+            handler.removeCallbacksAndMessages(null)
+            val cycle = totalMs
+            fun cycleStep(idx: Int) {
+                if (myToken != patternToken) return
+                if (idx >= repeatCount) {
+                    callback?.invoke(mapOf("completed" to "1"))
+                    return
+                }
+                playOnce()
+                handler.postDelayed({ cycleStep(idx + 1) }, cycle)
+            }
+            handler.post { cycleStep(0) }
+        }
+    }
+
+    private fun getCapabilities(callback: KuiklyRenderCallback?) {
+        val vibrator = getVibrator()
+        val supported = vibrator?.hasVibrator() ?: false
+        val supportsAmplitude = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                vibrator?.hasAmplitudeControl() ?: false
+            } catch (e: Exception) {
+                false
+            }
+        } else {
+            false
+        }
+        val caps = mapOf(
+            "supported" to if (supported) "1" else "0",
+            "supportsAmplitude" to if (supportsAmplitude) "1" else "0",
+            "supportsPredefined" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) "1" else "0",
+            "supportsPattern" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) "1" else "0",
+            "maxDurationMs" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "60000" else "0"
+        )
+        callback?.invoke(caps)
+    }
+
     companion object {
         const val MODULE_NAME = "HRVibrateModule"
         const val METHOD_VIBRATE = "vibrate"
@@ -265,6 +403,8 @@ public class KRVibrateModule : KuiklyRenderBaseModule() {
         const val METHOD_VIBRATE_PATTERN = "vibratePattern"
         const val METHOD_CANCEL = "cancel"
         const val METHOD_IS_SUPPORTED = "isSupported"
+        const val METHOD_PLAY = "play"
+        const val METHOD_GET_CAPABILITIES = "getCapabilities"
         const val DEFAULT_DURATION_MS = 80
     }
 }

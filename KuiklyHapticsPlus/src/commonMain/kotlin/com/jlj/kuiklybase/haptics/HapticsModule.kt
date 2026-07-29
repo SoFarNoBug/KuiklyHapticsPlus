@@ -59,13 +59,20 @@ public class HapticsModule : Module() {
      * @param usage 震动场景（默认 "touch"）：透传至鸿蒙 [VibrateAttribute.usage]
      *  与 Android [VibrationAttributes]（API33+），iOS 忽略。
      */
-    fun vibrate(durationMs: Int, intensity: Float = 1f, usage: String = "touch") {
+    fun vibrate(
+        durationMs: Int,
+        intensity: Float = 1f,
+        usage: String = "touch",
+        sharpness: Float = 0.5f,
+        completion: CallbackFn? = null
+    ) {
         val params = JSONObject().apply {
             put(KEY_DURATION, durationMs)
             put(KEY_INTENSITY, intensity)
             put(KEY_USAGE, usage)
+            put(KEY_SHARPNESS, sharpness)
         }
-        callNativeMethod(METHOD_VIBRATE_WITH_DURATION, params)
+        callNativeMethod(METHOD_VIBRATE_WITH_DURATION, params, completion)
     }
 
     /**
@@ -79,6 +86,15 @@ public class HapticsModule : Module() {
             put(KEY_TYPE, type)
         }
         callNativeMethod(METHOD_HAPTIC, params)
+    }
+
+    /**
+     * 语义化 Haptic 反馈（类型安全重载）。
+     *
+     * @param type [HapticType] 枚举，等价于 [haptic] 的字符串入口，避免拼写错误。
+     */
+    fun haptic(type: HapticType) {
+        haptic(type.toApiString())
     }
 
     /**
@@ -124,6 +140,46 @@ public class HapticsModule : Module() {
         callNativeMethod(METHOD_IS_SUPPORTED, null, callbackFn)
     }
 
+    /**
+     * 高级自定义波形：按 [HapticEvent] 序列精确编排触感。
+     *
+     * 每段事件可独立指定 timeMs / durationMs / intensity / sharpness / frequencyHz；
+     * iOS 通过 Core Haptics 充分释放硬件能力，Android / 鸿蒙按自身能力优雅降级
+     * （忽略 sharpness / frequency 等不支持字段）。
+     *
+     * @param events 事件序列（相对时间轴，毫秒）。
+     * @param repeatCount 循环次数（默认 0 = 仅播放一次；>0 表示重复 N 次）。
+     * @param usage 震动场景（默认 [HapticUsage.TOUCH]）。
+     * @param completion 播放完成回调（尽力而为：iOS 精确，Android / 鸿蒙为近似）。
+     */
+    fun play(
+        events: List<HapticEvent>,
+        repeatCount: Int = 0,
+        usage: HapticUsage = HapticUsage.TOUCH,
+        completion: CallbackFn? = null
+    ) {
+        val eventArray = JSONArray()
+        events.forEach { eventArray.put(it.toJson()) }
+        val params = JSONObject().apply {
+            put(KEY_EVENTS, eventArray)
+            put(KEY_REPEAT_COUNT, repeatCount)
+            put(KEY_USAGE, usage.toApiString())
+        }
+        callNativeMethod(METHOD_PLAY, params, completion)
+    }
+
+    /**
+     * 查询设备触感能力，异步回调原始结果（JSON / Map）。
+     *
+     * 可用 [HapticCapabilities.fromRaw] 解析为类型安全对象，例如：
+     * ```kotlin
+     * hm.getCapabilities { raw -> val caps = HapticCapabilities.fromRaw(raw) }
+     * ```
+     */
+    fun getCapabilities(callbackFn: CallbackFn) {
+        callNativeMethod(METHOD_GET_CAPABILITIES, null, callbackFn)
+    }
+
     private fun callNativeMethod(methodName: String, data: JSONObject?) {
         toNative(false, methodName, data?.toString(), null, false)
     }
@@ -140,6 +196,8 @@ public class HapticsModule : Module() {
         const val METHOD_VIBRATE_PATTERN = "vibratePattern"
         const val METHOD_CANCEL = "cancel"
         const val METHOD_IS_SUPPORTED = "isSupported"
+        const val METHOD_PLAY = "play"
+        const val METHOD_GET_CAPABILITIES = "getCapabilities"
 
         const val KEY_DURATION = "duration"
         const val KEY_INTENSITY = "intensity"
@@ -148,5 +206,8 @@ public class HapticsModule : Module() {
         const val KEY_TIMINGS = "timings"
         const val KEY_INTENSITIES = "intensities"
         const val KEY_REPEAT = "repeat"
+        const val KEY_EVENTS = "events"
+        const val KEY_REPEAT_COUNT = "repeatCount"
+        const val KEY_SHARPNESS = "sharpness"
     }
 }

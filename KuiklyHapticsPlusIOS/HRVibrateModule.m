@@ -33,7 +33,10 @@
     NSNumber *i = params[@"intensity"];
     double intensity = (i && [i isKindOfClass:[NSNumber class]]) ? [i doubleValue] : 1.0;
     if (intensity <= 0.0 || intensity > 1.0) intensity = 1.0;
-    [self playContinuousWithIntensity:intensity duration:duration / 1000.0];
+    NSNumber *s = params[@"sharpness"];
+    double sharpness = (s && [s isKindOfClass:[NSNumber class]]) ? [s doubleValue] : 0.5;
+    if (sharpness < 0.0 || sharpness > 1.0) sharpness = 0.5;
+    [self playContinuousWithIntensity:intensity duration:duration / 1000.0 sharpness:sharpness];
 }
 
 #pragma mark - 语义反馈
@@ -190,6 +193,133 @@
     }
 }
 
+#pragma mark - 高级波形引擎
+
+- (CHHapticPattern *)buildPatternFromEvents:(NSArray *)events error:(NSError **)error {
+    NSMutableArray *hapticEvents = [NSMutableArray array];
+    for (NSDictionary *e in events) {
+        double time = [e[@"time"] doubleValue] / 1000.0;        // ms -> s
+        double duration = [e[@"duration"] doubleValue] / 1000.0; // ms -> s
+        double intensity = [e[@"intensity"] doubleValue];
+        if (intensity < 0.0 || intensity > 1.0) intensity = 1.0;
+        double sharpness = [e[@"sharpness"] doubleValue];
+        if (sharpness < 0.0 || sharpness > 1.0) sharpness = 0.5;
+        double frequency = [e[@"frequency"] doubleValue];
+
+        NSMutableArray *params = [NSMutableArray array];
+        [params addObject:[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:(float)intensity]];
+        [params addObject:[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:(float)sharpness]];
+
+        CHHapticEvent *event;
+        if (duration > 0) {
+            // 持续段：频率通过动态参数注入（iOS 支持）
+            NSMutableArray *dynamics = [NSMutableArray array];
+            if (frequency > 0) {
+                [dynamics addObject:[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticFrequency value:(float)frequency relativeTime:0]];
+            }
+            event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+                                                  parameters:params
+                                               relativeTime:time
+                                                  duration:duration];
+            if (dynamics.count > 0) {
+                event.dynamicParameters = dynamics;
+            }
+        } else {
+            // 瞬态点触
+            event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient
+                                                  parameters:params
+                                               relativeTime:time];
+        }
+        [hapticEvents addObject:event];
+    }
+    return [[CHHapticPattern alloc] initWithEvents:hapticEvents parameters:@[] error:error];
+}
+
+- (void)play:(NSDictionary *)args {
+    KuiklyRenderCallback callback = args[KR_CALLBACK_KEY];
+    NSDictionary *params = [args[KR_PARAM_KEY] hr_stringToDictionary];
+    NSArray *events = params[@"events"];
+    if (events == nil || ![events isKindOfClass:[NSArray class]] || events.count == 0) {
+        if (callback) callback(@{@"completed": @"1"});
+        return;
+    }
+    NSNumber *rc = params[@"repeatCount"];
+    NSInteger repeatCount = (rc && [rc isKindOfClass:[NSNumber class]]) ? [rc integerValue] : 0;
+
+    // 计算波形总时长（秒）
+    double total = 0;
+    for (NSDictionary *e in events) {
+        double end = [e[@"time"] doubleValue] / 1000.0 + [e[@"duration"] doubleValue] / 1000.0;
+        if (end > total) total = end;
+    }
+    if (total <= 0) total = 0.02;
+
+    if (@available(iOS 13.0, *)) {
+        CHHapticEngine *engine = [self ensureEngine];
+        if (engine == nil) {
+            if (callback) callback(@{@"completed": @"1"});
+            return;
+        }
+        NSError *error = nil;
+        CHHapticPattern *pattern = [self buildPatternFromEvents:events error:&error];
+        if (error || pattern == nil) {
+            if (callback) callback(@{@"completed": @"1"});
+            return;
+        }
+        if (repeatCount <= 1) {
+            // 单次播放，completion 精确回调
+            id<CHHapticPatternPlayer> player = [engine createPlayerWithPattern:pattern error:&error];
+            if (player == nil) {
+                if (callback) callback(@{@"completed": @"1"});
+                return;
+            }
+            [player startAtTime:0 completion:^(NSError * _Nullable error) {
+                if (callback) callback(@{@"completed": @"1"});
+            }];
+        } else {
+            // 有限次循环：advanced player 设置 loop，计时停止
+            id<CHHapticAdvancedPatternPlayer> player = [engine createAdvancedPatternPlayerWithPattern:pattern error:&error];
+            if (player == nil) {
+                if (callback) callback(@{@"completed": @"1"});
+                return;
+            }
+            player.loopEnabled = YES;
+            player.loopEndTime = total;
+            [player startAtTime:0 error:&error];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(total * repeatCount * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                @try { [player stopAtTime:0 error:nil]; } @catch (NSException *e) {}
+                if (callback) callback(@{@"completed": @"1"});
+            });
+        }
+    } else {
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        if (callback) callback(@{@"completed": @"1"});
+    }
+}
+
+- (void)getCapabilities:(NSDictionary *)args {
+    KuiklyRenderCallback callback = args[KR_CALLBACK_KEY];
+    BOOL supported = NO;
+    NSMutableDictionary *caps = [NSMutableDictionary dictionary];
+    if (@available(iOS 13.0, *)) {
+        CHHapticCapabilities *hardwareCaps = [CHHapticEngine capabilitiesForHardware];
+        supported = hardwareCaps.supportsHaptics;
+        caps[@"supportsAmplitude"] = @"1";   // Core Haptics 天然支持强度
+        caps[@"supportsPredefined"] = @"1";
+        caps[@"supportsPattern"] = @"1";
+        double maxDur = hardwareCaps.maximumDuration;
+        caps[@"maxDurationMs"] = [NSString stringWithFormat:@"%lld", (long long)(maxDur * 1000)];
+    } else {
+        caps[@"supportsAmplitude"] = @"0";
+        caps[@"supportsPredefined"] = @"0";
+        caps[@"supportsPattern"] = @"0";
+        caps[@"maxDurationMs"] = @"0";
+    }
+    caps[@"supported"] = supported ? @"1" : @"0";
+    if (callback) callback(caps);
+}
+
 #pragma mark - Core Haptics 内部实现
 - (CHHapticEngine *)ensureEngine {
     if (@available(iOS 13.0, *)) {
@@ -249,7 +379,7 @@
     }
 }
 
-- (void)playContinuousWithIntensity:(double)intensity duration:(double)duration {
+- (void)playContinuousWithIntensity:(double)intensity duration:(double)duration sharpness:(double)sharpness {
     if (@available(iOS 13.0, *)) {
         CHHapticEngine *engine = [self ensureEngine];
         if (engine == nil) {
@@ -262,7 +392,7 @@
                                                           value:(float)intensity];
         CHHapticEventParameter *sharpnessParam =
             [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
-                                                          value:0.5f];
+                                                          value:(float)sharpness];
         CHHapticEvent *event =
             [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
                                           parameters:@[intensityParam, sharpnessParam]
