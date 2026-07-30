@@ -181,12 +181,10 @@
     KuiklyRenderCallback callback = args[KR_CALLBACK_KEY];
     BOOL supported = YES;
     if (@available(iOS 13.0, *)) {
-        if (self.hapticEngine != nil) {
-            supported = self.hapticEngine.supportsHaptics;
-        } else {
-            CHHapticCapabilities *caps = [CHHapticEngine capabilitiesForHardware];
-            supported = caps.supportsHaptics;
-        }
+        // CHHapticEngine 无 supportsHaptics 属性；应通过类方法 capabilitiesForHardware
+        // 返回 id<CHHapticDeviceCapability>，其 supportsHaptics 表示硬件是否支持触感播放
+        id<CHHapticDeviceCapability> caps = [CHHapticEngine capabilitiesForHardware];
+        supported = caps.supportsHaptics;
     }
     if (callback) {
         callback(@{@"supported": supported ? @"1" : @"0"});
@@ -269,13 +267,13 @@
             if (callback) callback(@{@"completed": @"1"});
         } else {
             // 有限次循环：advanced player 设置 loop，计时停止
-            id<CHHapticAdvancedPatternPlayer> player = [engine createAdvancedPatternPlayerWithPattern:pattern error:&error];
+            id<CHHapticAdvancedPatternPlayer> player = [engine createAdvancedPlayerWithPattern:pattern error:&error];
             if (player == nil) {
                 if (callback) callback(@{@"completed": @"1"});
                 return;
             }
             player.loopEnabled = YES;
-            player.loopEndTime = total;
+            player.loopEnd = total;
             [player startAtTime:0 error:&error];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(total * repeatCount * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -294,13 +292,13 @@
     BOOL supported = NO;
     NSMutableDictionary *caps = [NSMutableDictionary dictionary];
     if (@available(iOS 13.0, *)) {
-        CHHapticCapabilities *hardwareCaps = [CHHapticEngine capabilitiesForHardware];
+        id<CHHapticDeviceCapability> hardwareCaps = [CHHapticEngine capabilitiesForHardware];
         supported = hardwareCaps.supportsHaptics;
         caps[@"supportsAmplitude"] = @"1";   // Core Haptics 天然支持强度
         caps[@"supportsPredefined"] = @"1";
         caps[@"supportsPattern"] = @"1";
-        double maxDur = hardwareCaps.maximumDuration;
-        caps[@"maxDurationMs"] = [NSString stringWithFormat:@"%lld", (long long)(maxDur * 1000)];
+        // CHHapticDeviceCapability 未暴露最大时长，触感模式无硬性上限，标记为 0（无限制）
+        caps[@"maxDurationMs"] = @"0";
     } else {
         caps[@"supportsAmplitude"] = @"0";
         caps[@"supportsPredefined"] = @"0";
@@ -316,7 +314,7 @@
     if (@available(iOS 13.0, *)) {
         if (self.hapticEngine == nil) {
             NSError *error = nil;
-            self.hapticEngine = [[CHHapticEngine alloc] initWithConfiguration:nil error:&error];
+            self.hapticEngine = [[CHHapticEngine alloc] initAndReturnError:&error];
             if (error || self.hapticEngine == nil) {
                 self.hapticEngine = nil;
                 return nil;
@@ -416,7 +414,7 @@
         id<CHHapticPatternPlayer> player;
         if (loop) {
             id<CHHapticAdvancedPatternPlayer> advPlayer =
-                [engine createAdvancedPatternPlayerWithPattern:pattern error:&error];
+                [engine createAdvancedPlayerWithPattern:pattern error:&error];
             if (advPlayer != nil) {
                 advPlayer.loopEnabled = YES;
             }
@@ -437,7 +435,6 @@
 - (void)stopHaptics {
     if (@available(iOS 13.0, *)) {
         if (self.hapticEngine != nil) {
-            NSError *error = nil;
             [self.hapticEngine stopWithCompletionHandler:^(NSError * _Nullable error) {}];
             self.hapticEngine = nil;
         }
