@@ -9,7 +9,7 @@ Pod::Spec.new do |spec|
   spec.source       = { :git => 'https://github.com/jlj/KuiklyHapticsPlus.git', :tag => spec.version.to_s }
   spec.source_files = 'HRVibrateModule.{h,m}'
   spec.requires_arc = true
-  spec.platform     = :ios, '11.0'
+  spec.platform     = :ios, '13.0'
   spec.dependency 'OpenKuiklyIOSRender'
   spec.swift_version = '5.0'
 end

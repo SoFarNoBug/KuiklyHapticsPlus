@@ -204,7 +204,6 @@
         if (intensity < 0.0 || intensity > 1.0) intensity = 1.0;
         double sharpness = [e[@"sharpness"] doubleValue];
         if (sharpness < 0.0 || sharpness > 1.0) sharpness = 0.5;
-        double frequency = [e[@"frequency"] doubleValue];
 
         NSMutableArray *params = [NSMutableArray array];
         [params addObject:[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:(float)intensity]];
@@ -212,18 +211,11 @@
 
         CHHapticEvent *event;
         if (duration > 0) {
-            // 持续段：频率通过动态参数注入（iOS 支持）
-            NSMutableArray *dynamics = [NSMutableArray array];
-            if (frequency > 0) {
-                [dynamics addObject:[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticFrequency value:(float)frequency relativeTime:0]];
-            }
+            // 持续段
             event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
                                                   parameters:params
                                                relativeTime:time
                                                   duration:duration];
-            if (dynamics.count > 0) {
-                event.dynamicParameters = dynamics;
-            }
         } else {
             // 瞬态点触
             event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient
@@ -273,9 +265,8 @@
                 if (callback) callback(@{@"completed": @"1"});
                 return;
             }
-            [player startAtTime:0 completion:^(NSError * _Nullable error) {
-                if (callback) callback(@{@"completed": @"1"});
-            }];
+            [player startAtTime:0 error:&error];
+            if (callback) callback(@{@"completed": @"1"});
         } else {
             // 有限次循环：advanced player 设置 loop，计时停止
             id<CHHapticAdvancedPatternPlayer> player = [engine createAdvancedPatternPlayerWithPattern:pattern error:&error];
@@ -447,7 +438,7 @@
     if (@available(iOS 13.0, *)) {
         if (self.hapticEngine != nil) {
             NSError *error = nil;
-            [self.hapticEngine stopWithError:&error];
+            [self.hapticEngine stopWithCompletionHandler:^(NSError * _Nullable error) {}];
             self.hapticEngine = nil;
         }
     }
