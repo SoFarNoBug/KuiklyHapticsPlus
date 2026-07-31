@@ -1,6 +1,6 @@
 {
   "name": "@jlj/kuikly-haptics-plus-ohos",
-  "version": "2026.7.29-1",
+  "version": "0.1.0",
   "description": "Kuikly Haptics Plus Module for Ohos (KRVibrateModule)",
   "main": "src/main/ets/KRVibrateModule.ets",
   "author": "jlj",
@@ -13,7 +13,7 @@
   "homepage": "https://github.com/SoFarNoBug/KuiklyHapticsPlus#readme",
   "keywords": ["kuikly", "haptics", "vibrate", "ohos", "harmonyos"],
   "dependencies": {
-    "@kuikly-open/render": "2.7.0"
+    "@kuikly-open/render": "2.23.0"
   },
   "devDependencies": {}
 }

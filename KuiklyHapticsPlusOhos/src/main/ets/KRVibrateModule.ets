@@ -19,12 +19,13 @@
  * 说明：
  *  - 鸿蒙 time 型震动不支持直接指定强度，故 vibrateWithDuration 忽略 intensity，仅按 duration 震动。
  *  - usage 透传至 VibrateAttribute.usage（字符串联合类型，见 resolveUsage）。
- *  - 自定义震动统一用 VibratorPatternBuilder 构造（addContinuousEvent，单位 μs）。
+ *  - 自定义震动统一用 VibratorPatternBuilder 构造（addContinuousEvent，单位 ms）。
  */
 
 import { common } from '@kit.AbilityKit';
 import { KuiklyRenderBaseModule, KuiklyRenderCallback, KTAny } from '@kuikly-open/render';
 import vibrator from '@ohos.vibrator';
+import { BusinessError } from '@ohos.base';
 
 export class KRVibrateModule extends KuiklyRenderBaseModule {
   static readonly MODULE_NAME = "HRVibrateModule";
@@ -87,7 +88,17 @@ export class KRVibrateModule extends KuiklyRenderBaseModule {
       'physicalFeedback': 'physicalFeedback',
       'simulateReality': 'simulateReality'
     };
-    return map[raw ?? 'touch'] ?? 'touch';
+    // 鸿蒙 vibrator.Usage 不含 'game' 等常见业务语义；未知 usage 打告警并降级 touch（静默降级不透明问题修复）。
+    const fallback: vibrator.Usage = 'touch';
+    if (!raw) {
+      return fallback;
+    }
+    const resolved = map[raw];
+    if (!resolved) {
+      console.warn("[KRVibrateModule] unknown usage '" + raw + "', fallback to '" + fallback + "'");
+      return fallback;
+    }
+    return resolved;
   }
 
   private parseParams(params: KTAny): Record<string, Object> {
@@ -105,27 +116,17 @@ export class KRVibrateModule extends KuiklyRenderBaseModule {
     const p = this.parseParams(params);
     const usage: vibrator.Usage = this.resolveUsage(p["usage"] as string);
     const effect: vibrator.VibrateEffect = { type: 'time', duration: 30 };
-    const attr: vibrator.VibrateAttribute = { usage: usage };
-    try {
-      vibrator.startVibration(effect, attr);
-    } catch (e) {
-      console.error("[KRVibrateModule] vibrate error: " + (e as Error).message);
-    }
+    const attr: vibrator.VibrateAttribute = { id: 0, usage: usage };
+    this.startVibrationWithRetry(effect, attr, 3, 50);
   }
 
   private vibrateWithDuration(params: KTAny, callback: KuiklyRenderCallback): void {
     const p = this.parseParams(params);
     const duration = (p["duration"] as number) ?? 30;
-    const intensity = (p["intensity"] as number) ?? 1.0;
     const usage: vibrator.Usage = this.resolveUsage(p["usage"] as string);
-    const strength = Math.max(1, Math.min(100, Math.round(intensity * 100)));
     const effect: vibrator.VibrateEffect = { type: 'time', duration: duration };
-    const attr: vibrator.VibrateAttribute = { usage: usage };
-    try {
-      vibrator.startVibration(effect, attr);
-    } catch (e) {
-      console.error("[KRVibrateModule] vibrateWithDuration error: " + (e as Error).message);
-    }
+    const attr: vibrator.VibrateAttribute = { id: 0, usage: usage };
+    this.startVibrationWithRetry(effect, attr, 3, 50);
     if (callback) {
       setTimeout(() => {
         callback({ completed: "1" });
@@ -136,57 +137,95 @@ export class KRVibrateModule extends KuiklyRenderBaseModule {
   private haptic(params: KTAny): void {
     const p = this.parseParams(params);
     const type = (p["type"] as string) ?? "medium";
+    // haptic 语义即 UI 触感反馈；usage 透传调用方（缺省 touch），仍受「触感开关」管控。
     const usage: vibrator.Usage = this.resolveUsage(p["usage"] as string);
-    let effectId: string = 'haptic.default';
-    switch (type) {
-      case "light":
-        effectId = 'haptic.light';
-        break;
-      case "medium":
-        effectId = 'haptic.medium';
-        break;
-      case "heavy":
-        effectId = 'haptic.heavy';
-        break;
-      case "success":
-        effectId = 'haptic.success';
-        break;
-      case "warning":
-        effectId = 'haptic.warning';
-        break;
-      case "error":
-        effectId = 'haptic.failure';
-        break;
-      case "selection":
-        effectId = 'haptic.selection';
-        break;
-      default:
-        effectId = 'haptic.default';
-        break;
-    }
+    const attr: vibrator.VibrateAttribute = { id: 0, usage: usage };
+    const effectId = this.presetEffectId(type);
     const effect: vibrator.VibrateEffect = { type: 'preset', effectId: effectId };
-    const attr: vibrator.VibrateAttribute = { usage: usage };
-    try {
-      vibrator.startVibration(effect, attr);
-    } catch (e) {
-      console.error("[KRVibrateModule] haptic error: " + (e as Error).message);
+    // 优先尝试系统 preset 原始触感；部分设备/固件不支持特定 preset，会返回 14600101
+    // （Device operation failed：HDI 异常或设备被占用）。此时回退到 time 短震（沿用同一 usage）。
+    // 注意：preset 失败后立即在同线程发起 time 短震，常被 HDI 判为「设备被占用」而再次 14600101，
+    // 故回退走 startVibrationWithRetry 做延迟重试（官方对该错误码的建议正是「间隔一段时间重试」）。
+    vibrator.startVibration(effect, attr, (err: BusinessError | null) => {
+      if (err) {
+        console.warn("[KRVibrateModule] preset haptic '" + effectId + "' failed (" + err.message + "), fallback to time vibration");
+        const fbEffect: vibrator.VibrateEffect = { type: 'time', duration: this.hapticFallbackMs(type) };
+        this.startVibrationWithRetry(fbEffect, attr, 3, 50);
+      }
+    });
+  }
+
+  private presetEffectId(type: string): string {
+    switch (type) {
+      case "light": return 'haptic.light';
+      case "medium": return 'haptic.medium';
+      case "heavy": return 'haptic.heavy';
+      case "success": return 'haptic.success';
+      case "warning": return 'haptic.warning';
+      case "error": return 'haptic.failure';
+      case "selection": return 'haptic.selection';
+      default: return 'haptic.default';
     }
+  }
+
+  private hapticFallbackMs(type: string): number {
+    switch (type) {
+      case "light": return 20;
+      case "medium": return 40;
+      case "heavy": return 90;
+      case "selection": return 15;
+      case "success": return 60;
+      case "warning": return 80;
+      case "error": return 100;
+      default: return 30;
+    }
+  }
+
+  // 通用 startVibration 重试：应对 14600101（Device operation failed，官方成因含「设备被占用」）。
+  // 失败按指数退避（delayMs, delayMs*2, ...）最多 attempts 次；成功或最终失败仅打日志，不抛异常。
+  // 三个入口（vibrate / vibrateWithDuration / haptic 回退）统一复用，避免各路径在设备忙时一次性失败无回退。
+  private startVibrationWithRetry(effect: vibrator.VibrateEffect, attr: vibrator.VibrateAttribute, attempts: number, delayMs: number): void {
+    vibrator.startVibration(effect, attr, (err: BusinessError | null) => {
+      if (err && attempts > 1) {
+        console.warn("[KRVibrateModule] startVibration failed (" + err.message + "), retry after " + delayMs + "ms, left " + (attempts - 1));
+        setTimeout(() => {
+          this.startVibrationWithRetry(effect, attr, attempts - 1, delayMs * 2);
+        }, delayMs);
+      } else if (err) {
+        console.error("[KRVibrateModule] startVibration failed: " + err.message);
+      }
+    });
+  }
+
+  private buildCurve(duration: number, intensityGain: number, frequencyOffset: number): Array<vibrator.VibratorCurvePoint> {
+    // VibratorCurvePoint: time(相对事件起点的 ms), intensity([0,1] 增益，乘上事件强度), frequency([-100,100] 相对事件频率的偏移)
+    // 调节点最少 4 个、最多 16 个；此处用 4 点恒定增益覆盖整段 duration
+    const d = Math.max(1, duration);
+    return [
+      { time: 0, intensity: intensityGain, frequency: frequencyOffset },
+      { time: Math.round(d * 0.33), intensity: intensityGain, frequency: frequencyOffset },
+      { time: Math.round(d * 0.66), intensity: intensityGain, frequency: frequencyOffset },
+      { time: d, intensity: intensityGain, frequency: frequencyOffset }
+    ];
   }
 
   private buildPattern(timings: Array<number>, intensities: Array<number>): vibrator.VibratorPattern {
     const builder: vibrator.VibratorPatternBuilder = new vibrator.VibratorPatternBuilder();
-    let startTime = 0; // μs
+    let startTime = 0; // ms
     const n = timings.length;
     for (let i = 0; i < n; i++) {
       const t = timings[i];
       const inten = intensities.length > i ? intensities[i] : 1.0;
       if (i % 2 === 1 && t > 0) {
         // 奇数位 = 震动段（与 Android createWaveform(timings, amplitudes) 语义一致：偶数=静默，奇数=震动）
+        const duration = Math.min(5000, Math.max(1, t)); // 单段持续时长上限 5000ms
         const opts: vibrator.ContinuousParam = {
-          intensity: Math.round(inten * 100),
-          frequency: 0
+          intensity: Math.max(0, Math.min(100, Math.round(inten * 100))),
+          frequency: 55, // 器件谐振频率附近，振动量最大
+          index: 0,
+          points: this.buildCurve(duration, 1.0, 0)
         };
-        builder.addContinuousEvent(startTime * 1000, t * 1000, opts);
+        builder.addContinuousEvent(startTime, duration, opts);
       }
       startTime += t;
     }
@@ -202,13 +241,9 @@ export class KRVibrateModule extends KuiklyRenderBaseModule {
       return;
     }
     const effect: vibrator.VibrateEffect = { type: 'pattern', pattern: this.buildPattern(timings, intensities) };
-    const attr: vibrator.VibrateAttribute = { usage: 'touch' };
+    const attr: vibrator.VibrateAttribute = { id: 0, usage: 'touch' };
     const fire = () => {
-      try {
-        vibrator.startVibration(effect, attr);
-      } catch (e) {
-        console.error("[KRVibrateModule] vibratePattern error: " + (e as Error).message);
-      }
+      this.startVibrationWithRetry(effect, attr, 2, 50);
     };
     fire();
     if (repeat) {
@@ -254,14 +289,16 @@ export class KRVibrateModule extends KuiklyRenderBaseModule {
       if (durationMs <= 0) {
         durationMs = 20; // 瞬态点触默认 20ms
       }
+      durationMs = Math.min(5000, Math.max(1, durationMs)); // 单段持续时长上限 5000ms
       const intensity = (e["intensity"] as number) ?? 1.0;
       const clampedIntensity = Math.max(0, Math.min(1, intensity));
-      const frequency = (e["frequency"] as number) ?? 0;
       const opts: vibrator.ContinuousParam = {
         intensity: Math.round(clampedIntensity * 100),
-        frequency: frequency
+        frequency: 55, // 器件谐振频率附近，振动量最大
+        index: 0,
+        points: this.buildCurve(durationMs, 1.0, 0)
       };
-      builder.addContinuousEvent(timeMs * 1000, durationMs * 1000, opts);
+      builder.addContinuousEvent(timeMs, durationMs, opts);
       const endMs = timeMs + durationMs;
       if (endMs > totalMs) {
         totalMs = endMs;
@@ -269,13 +306,9 @@ export class KRVibrateModule extends KuiklyRenderBaseModule {
     }
     const pattern: vibrator.VibratorPattern = builder.build();
     const effect: vibrator.VibrateEffect = { type: 'pattern', pattern: pattern };
-    const attr: vibrator.VibrateAttribute = { usage: 'touch' };
+    const attr: vibrator.VibrateAttribute = { id: 0, usage: 'touch' };
     const fire = () => {
-      try {
-        vibrator.startVibration(effect, attr);
-      } catch (e) {
-        console.error("[KRVibrateModule] play error: " + (e as Error).message);
-      }
+      this.startVibrationWithRetry(effect, attr, 2, 50);
     };
     fire();
     if (repeatCount <= 1) {
