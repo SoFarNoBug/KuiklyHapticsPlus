@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name         = 'KuiklyHapticsPlusIOS'
-  spec.version      = '0.0.2'
+  spec.version      = '0.2.0'
   spec.summary      = 'Kuikly Haptics Plus Module for iOS (HRVibrateModule)'
   spec.description  = '跨端手机震动 / 触感反馈 Kuikly Module 的 iOS 原生实现（HRVibrateModule）。'
   spec.homepage     = 'https://github.com/jlj/KuiklyHapticsPlus'

@@ -123,3 +123,15 @@ mavenPublishing {
         }
     }
 }
+
+// Dokka 生成 javadoc jar（Maven Central 发布必需）时，默认会联网抓取
+// developer.android.com / jdk / kotlin stdlib 的 package-list。本地无外网访问时
+// 会长时间卡在 Rendering 阶段。关闭这些外部链接即可离线生成（仅丢失外部 API 超链接，
+// 不影响本库自身类的文档内容）。
+tasks.withType<org.jetbrains.dokka.gradle.DokkaTask>().configureEach {
+    dokkaSourceSets.configureEach {
+        noAndroidSdkLink.set(true)
+        noJdkLink.set(true)
+        noStdlibLink.set(true)
+    }
+}
